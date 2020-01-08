@@ -116,10 +116,10 @@ hook global GlobalSetOption kaktree_show_hidden=.+ kaktree--refresh
 define-command -hidden kaktree--enable-impl %{
     evaluate-commands %sh{
         [ "${kak_opt_kaktree__active}" = "true" ] && exit
-        printf "%s\n" "set-option global kaktree__jumpclient '${kak_client:-client0}'
+        printf "%s\n" "set-option global kaktree__jumpclient %opt{jumpclient}
                        set-option global kaktree__active true
                        hook -group kaktree-watchers global FocusIn (?!${kak_opt_kaktreeclient}).* %{
-                           set-option global kaktree__jumpclient %{${kak_client:-client0}}
+                           set-option global kaktree__jumpclient %opt{jumpclient}
                        }"
     }
 }
@@ -146,32 +146,17 @@ kaktree-toggle %{ evaluate-commands %sh{
     fi
 }}
 
-define-command -hidden kaktree--display %{ nop %sh{
-    [ "${kak_opt_kaktree__onscreen}" = "true" ] && exit
-    if [ "${kak_opt_kaktree_show_help}" = "true" ]; then
-        printf "%s\n" "set-option global kaktree_show_help false" | kak -p ${kak_session}
-        show_help="kaktree-help"
-    fi
-    kaktree_cmd="try %{
-                     buffer *kaktree*
-                     rename-client %opt{kaktreeclient}
-                 } catch %{
-                     edit! -debug -scratch *kaktree*
-                     set-option buffer filetype kaktree
-                     rename-client %opt{kaktreeclient}
-                     kaktree--refresh
-                     $show_help
-                 }"
-
-    if [ -n "$TMUX" ]; then
-        [ "${kak_opt_kaktree_split}" = "vertical" ] && split="-v" || split="-h"
-        [ "${kak_opt_kaktree_side}" = "left" ] && side="-b" || side=
-        [ -n "${kak_opt_kaktree_size%%*%}" ] && measure="-l" || measure="-p"
-        tmux split-window -f ${split} ${side} ${measure} ${kak_opt_kaktree_size%%%*} kak -c ${kak_session} -e "${kaktree_cmd}"
-    elif [ -n "${kak_opt_termcmd}" ]; then
-        ( ${kak_opt_termcmd} "sh -c 'kak -c ${kak_session} -e \"${kaktree_cmd}\"'" ) > /dev/null 2>&1 < /dev/null &
-    fi
-}}
+define-command -hidden kaktree--display %{ 
+   try %{
+       buffer *kaktree*
+       rename-client %opt{kaktreeclient}
+   } catch %{
+       edit! -debug -scratch *kaktree*
+       set-option buffer filetype kaktree
+       rename-client %opt{kaktreeclient}
+       kaktree--refresh
+   }
+}
 
 define-command -hidden kaktree--refresh %{ evaluate-commands %sh{
     saved_selection="$kak_selections_desc"
@@ -490,7 +475,7 @@ hook global ModuleLoaded powerline %§
 # requires `powerline.kak' plugin: https://github.com/andreyorst/powerline.kak
 hook -group kaktree-powerline global WinSetOption filetype=kaktree %{
     declare-option str powerline_format
-    set-option window powerline_format ""
+    set-option window powerline_format "bufname client position"
 }
 
 §
