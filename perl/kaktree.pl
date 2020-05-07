@@ -8,6 +8,7 @@
 # ╰───────────────────────────────╯
 use strict;
 use warnings;
+use Cwd "abs_path";
 
 # This subroutine builds tree based on output of `ls' command. It recieves
 # current indentation level, and constructs tree node based on it.
@@ -20,7 +21,7 @@ sub build_tree {
     my $indent = $ENV{"kak_opt_kaktree_indentation"};
     my $current_indent = $ENV{"kak_opt_kaktree__current_indent"};
     my $hidden = $ENV{"kak_opt_kaktree_show_hidden"};
-    my $expanded_paths = $ENV{"kak_quoted_opt_kaktree__expanded_paths"} || '';
+    my $expanded_paths = $ENV{"kak_opt_kaktree__expanded_paths"} || '';
     my $sort = $ENV{"kak_opt_kaktree_sort"};
     my $indent_str;
 
@@ -29,18 +30,19 @@ sub build_tree {
     for my $i (1 .. ($indent * $extra_indent)) {
         $indent_str .= " ";
     }
-    my $hidden_arg = ($hidden eq "true") ? "-A" : "";
-    my $real_path = `realpath -m -- $path`;
-    chomp(my @input = `ls -lF $hidden_arg $real_path`);
 
-    # remove first line containing `total ...'
-    if ($input[0] =~ /total\s+\d+/){
-        shift(@input);
-    }
+    my $hidden_arg = ($hidden eq "true") ? "-A" : "";
+    my $real_path = abs_path(escape_path($path));
+
+    $real_path =~ s/\s+$//;
+    $real_path = escape_path($real_path);
+
+    chomp(my @input = `ls -1LFb 2>&- $hidden_arg $real_path`);
 
     my $input_size = scalar @input;
 
     if ($root ne "") {
+        $root = unescape_path($root);
         print "$current_indent$open_node $root\n";
     }
 
@@ -48,30 +50,24 @@ sub build_tree {
         my @dir_nodes;
         my @file_nodes;
         foreach my $item (@input) {
-            if ($item =~ /(?:[^\s]+\s+){8}(.*)\/$/) {
-                my $dir = $1;
-                if ($dir =~ /(.*)\s+->\s+.*/) {
-                    $dir = $1;
+            if ($item =~ /^(.*?)([\/=%|*])?$/) {
+                my $unescaped = unescape_path($1);
+                if ((defined $2) && ($2 eq '/')) {
+                    push(@dir_nodes, $unescaped);
+                } else {
+                    push(@file_nodes, $unescaped);
                 }
-                push(@dir_nodes, $dir);
-            } else {
-                $item =~ /(?:[^\s]+\s+){8}(.*)$/;
-                my $file = $1;
-                if ($file =~ /(.*)\s+->\s+.*/) {
-                    $file = $1;
-                }
-                push(@file_nodes, $file);
             }
         }
 
         if ((defined $sort) && ($sort eq "true")) {
-            @dir_nodes = sort @dir_nodes;
-            @file_nodes = sort @file_nodes;
+            if (@dir_nodes) { @dir_nodes = sort @dir_nodes; }
+            if (@file_nodes) { @file_nodes = sort @file_nodes; }
         }
 
         foreach my $item (@dir_nodes) {
-            my $item_path = "$path/$item";
-            if ($expanded_paths =~ /'$item_path'/) {
+            my $item_path = unescape_path("$path/$item");
+            if ($expanded_paths =~ /$item_path/) {
                 print "$current_indent$indent_str$open_node $item\n";
                 build_tree($item_path, "", $extra_indent + 1)
             } else {
@@ -120,6 +116,18 @@ sub make_path {
     my $path = join("/", reverse @dirs);
 
     print "$path\n";
+}
+
+sub escape_path {
+    my $path = $_[0];
+    $path =~ s/([@ '"])/\\$1/g;
+    return $path;
+}
+
+sub unescape_path {
+    my $path = $_[0];
+    $path =~ s/\\([@ '"])/$1/g;
+    return $path;
 }
 
 1; # this is needed to call sobroutines directly from this file

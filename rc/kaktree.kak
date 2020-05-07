@@ -34,7 +34,7 @@ When kaktree_split is set to 'horizontal', 'left' and 'right' will make split ab
 str kaktree_side "left"
 
 declare-option -docstring "The size of kaktree pane. Can be either a number of columns or size in percentage." \
-str kaktree_size '28'
+str kaktree_size '36'
 
 declare-option -docstring "Icon of the closed directory displayed next to direname." \
 str kaktree_dir_icon_close '+'
@@ -62,6 +62,13 @@ str kaktree_double_click_duration '0.3'
 
 declare-option -docstring "Show the help box on first kaktree launch" \
 bool kaktree_show_help true
+
+declare-option -docstring "Should kaktree open file when <tab> key is pressed" \
+bool kaktree_tab_open_file false
+
+define-command -hidden kaktree--tab-open-file %{ evaluate-commands %sh{
+    [ "$kak_opt_kaktree_tab_open_file" = "true" ] && echo nop || echo false
+}}
 
 declare-option -hidden str kaktree__current_click ''
 
@@ -120,7 +127,13 @@ define-command -hidden kaktree--enable-impl %{
                        set-option global kaktree__active true
                        hook -group kaktree-watchers global FocusIn (?!${kak_opt_kaktreeclient}).* %{
                            set-option global kaktree__jumpclient %opt{jumpclient}
-                       }"
+                       }
+                       hook -group kaktree-exit global ClientClose ${kak_opt_kaktreeclient} %{ kaktree-disable }
+                       "
+        printf "%s\n" 'hook -group kaktree-jumpclient-watcher global FocusOut .* %{ evaluate-commands %sh{
+                           [ "$kak_client" != "$kak_opt_kaktreeclient" ] && printf "%s\n" "set-option global kaktree__jumpclient $kak_client"
+                       }}'
+
     }
 }
 
@@ -129,6 +142,7 @@ kaktree-disable %{
     set-option global kaktree__active 'false'
     set-option global kaktree__onscreen 'false'
     remove-hooks global kaktree-watchers
+    remove-hooks global kaktree-jumpclient-watcher
     try %{ delete-buffer! *kaktree* } catch %{ echo -debug "Can't delete *kaktree* buffer. Error message: %val{error}" }
     try %{ evaluate-commands -client %opt{kaktreeclient} quit } catch %{ echo -debug "Can't close %opt{kaktreeclient}. Error message: %val{error}" }
 }
@@ -137,26 +151,37 @@ define-command -docstring "kaktree-toggle: Toggle kaktree window on and off" \
 kaktree-toggle %{ evaluate-commands %sh{
     if [ "${kak_opt_kaktree__active}" = "true" ]; then
         if [ "${kak_opt_kaktree__onscreen}" = "true" ]; then
-            printf "%s\n" "evaluate-commands -client %opt{kaktreeclient} quit
+            printf "%s\n" "remove-hooks global kaktree-exit
+                           evaluate-commands -client %opt{kaktreeclient} quit
                            set-option global kaktree__onscreen false"
         else
-            printf "%s\n" "evaluate-commands kaktree--display
+            printf "%s\n" "hook -group kaktree-exit global ClientClose ${kak_opt_kaktreeclient} %{ kaktree-disable }
+                           evaluate-commands kaktree--display
                            set-option global kaktree__onscreen true"
         fi
+    else
+        printf "%s\n" "evaluate-commands kaktree-enable
+                       evaluate-commands kaktree--display
+                       set-option global kaktree__onscreen true"
     fi
 }}
 
 define-command -hidden kaktree--display %{ 
-   try %{
-       buffer *kaktree*
-       rename-client %opt{kaktreeclient}
-   } catch %{
-       edit! -debug -scratch *kaktree*
-       set-option buffer filetype kaktree
-       rename-client %opt{kaktreeclient}
-       kaktree--refresh
-   }
+  try %{
+      buffer *kaktree*
+      rename-client %opt{kaktreeclient}
+  } catch %{
+      edit! -debug -scratch *kaktree*
+      set-option buffer filetype kaktree
+      rename-client %opt{kaktreeclient}
+      kaktree--refresh
+  }
 }
+
+define-command -docstring "kaktree-focus: Focus Kaktree client" \
+kaktree-focus %{ try %{
+    focus kaktreeclient
+}}
 
 define-command -hidden kaktree--refresh %{ evaluate-commands %sh{
     saved_selection="$kak_selections_desc"
@@ -168,54 +193,41 @@ define-command -hidden kaktree--refresh %{ evaluate-commands %sh{
 
     printf "%s\n" "hook global -always KakEnd .* %{ nop %sh{ rm -rf ${tmp} }}"
 
-    base_name() {
-        filename="$1"
-        case "$filename" in
-          */*[!/]*)
-            trail=${filename##*[!/]}
-            filename=${filename%%"$trail"}
-            base=${filename##*/} ;;
-          *[!/]*)
-            trail=${filename##*[!/]}
-            base=${filename%%"$trail"} ;;
-          *) base="/" ;;
-        esac
-        printf "%s\n" "${base}"
-    }
-
     # $kak_opt_kaktree_dir_icon_open
     # $kak_opt_kaktree_dir_icon_close
     # $kak_opt_kaktree_file_icon
     # $kak_opt_kaktree_indentation
     # $kak_opt_kaktree__current_indent
-    # $kak_quoted_opt_kaktree__expanded_paths
+    # $kak_opt_kaktree__expanded_paths
     # $kak_opt_kaktree_show_hidden
     # $kak_opt_kaktree_sort
     kak_opt_kaktree__current_indent=""
-    kaktree_root="$(base_name $(pwd))"
+    kaktree_root="$(basename -- "$(pwd)")"
+
     [ "$kak_opt_kaktree_show_hidden" = "true" ] && hidden="-A"
     command perl -e "$kak_opt_kaktree__perl build_tree('$(pwd)', '$kaktree_root');" > ${tree}
 
     printf "%s\n" "evaluate-commands -client %opt{kaktreeclient} %{ try %{
                        edit! -debug -fifo ${fifo} *kaktree*
-                       map buffer normal '<ret>' ': kaktree--ret-action<ret>'
-                       map buffer normal '<tab>' ': kaktree--tab-action<ret>'
-                       map buffer normal 'u' ': kaktree--change-root up<ret>'
-                       map buffer normal 'h' ': kaktree--hidden-toggle<ret>'
-                       map buffer normal 'r' ': kaktree--refresh<ret>'
-                       map buffer normal 'd' ': kaktree--file-delete<ret>'
-                       map buffer normal 'y' ': kaktree--file-yank<ret>'
-                       map buffer normal 'c' ': kaktree--file-paste cp<ret>'
-                       map buffer normal 'm' ': kaktree--file-paste mv<ret>'
-                       map buffer normal 'l' ': kaktree--file-paste %{ln -s}<ret>'
-                       map buffer normal 'R' ': kaktree--file-rename<ret>'
-                       map buffer normal '?' ': kaktree-help<ret>'
-                       map buffer normal 'i' ': nop<ret>'
-                       map buffer normal 'I' ': nop<ret>'
-                       map buffer normal 'o' ': nop<ret>'
-                       map buffer normal 'O' ': nop<ret>'
-                       map buffer normal 'a' ': nop<ret>'
-                       map buffer normal 'A' ': nop<ret>'
+                       map buffer normal '<ret>'   ': kaktree--ret-action<ret>'
+                       map buffer normal '<a-ret>' ': kaktree--alt-ret-action<ret>'
+                       map buffer normal '<tab>'   ': kaktree--tab-action<ret>'
+                       map buffer normal 'u'       ': kaktree--change-root up<ret>'
+                       map buffer normal 'h'       ': kaktree--hidden-toggle<ret>'
+                       map buffer normal 'r'       ': kaktree--refresh<ret>'
+                       map buffer normal 'd'       ': kaktree--file-delete<ret>'
+                       map buffer normal 'y'       ': kaktree--file-yank<ret>'
+                       map buffer normal 'c'       ': kaktree--file-paste cp<ret>'
+                       map buffer normal 'm'       ': kaktree--file-paste mv<ret>'
+                       map buffer normal 'l'       ': kaktree--file-paste %{ln -s}<ret>'
+                       map buffer normal 'R'       ': kaktree--file-rename<ret>'
+                       map buffer normal '?'       ': kaktree-help<ret>'
+                       map buffer normal 'i'       ': nop<ret>'
+                       map buffer normal 'I'       ': nop<ret>'
+                       map buffer normal 'o'       ': nop<ret>'
+                       map buffer normal 'O'       ': nop<ret>'
+                       map buffer normal 'a'       ': nop<ret>'
+                       map buffer normal 'A'       ': nop<ret>'
                        hook buffer RawKey '<mouse:press_left:.*>' kaktree--mouse-action
                        set-option buffer tabstop 1
                    }}"
@@ -233,6 +245,7 @@ define-command kaktree-help %{ evaluate-commands -try-client %opt{kaktree__jumpc
 j,k,arrows: move
 <tab>:      fold / unfold directory
 <ret>:      change root to directory / open file under cursor
+<a-ret>:    open file under cursor in specific client
 u:          change root to upper directory
 
 [Display]
@@ -263,7 +276,25 @@ define-command -hidden kaktree--ret-action %{ evaluate-commands -save-regs 'a' %
     } catch %{
         set-register a %opt{kaktree_file_icon}
         execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
-        kaktree--file-open
+        kaktree--file-open %opt{kaktree__jumpclient}
+    } catch %{
+        nop
+    }
+}}
+
+define-command -hidden kaktree--alt-ret-action %{ evaluate-commands -save-regs 'a' %{
+    try %{
+        set-register a %opt{kaktree_dir_icon_close}
+        execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
+        kaktree--change-root
+    } catch %{
+        set-register a %opt{kaktree_dir_icon_open}
+        execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
+        kaktree--change-root
+    } catch %{
+        set-register a %opt{kaktree_file_icon}
+        execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
+        kaktree--file-open-in-client
     } catch %{
         nop
     }
@@ -302,7 +333,7 @@ define-command -hidden kaktree--click-action %{ evaluate-commands -save-regs 'a'
     } catch %{
         set-register a %opt{kaktree_file_icon}
         execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
-        kaktree--file-open
+        kaktree--file-open %opt{kaktree__jumpclient}
     } catch %{
         nop
     }
@@ -318,6 +349,11 @@ define-command -hidden kaktree--tab-action %{ evaluate-commands -save-regs 'a' %
         execute-keys -draft '<a-x>s^\h*\Q<c-r>a\E<ret>'
         kaktree--dir-fold
     } catch %{
+        kaktree--tab-open-file
+        set-register a %opt{kaktree_file_icon}
+        execute-keys -draft '<a-x>s^\h*\Q<c-r>a<ret>'
+        kaktree--file-open %opt{kaktree__jumpclient}
+    } catch %{
         nop
     }
 }}
@@ -332,12 +368,17 @@ define-command -hidden kaktree--dir-unfold %{ evaluate-commands -save-regs 'abck
         # $kak_opt_kaktree_indentation
         # $kak_opt_kaktree__current_indent
         # $kak_opt_kaktree_show_hidden
-        # $kak_quoted_opt_kaktree__expanded_paths
+        # $kak_opt_kaktree__expanded_paths
         # $kak_opt_kaktree_sort
         dir_path="$kak_reg_k"
         kaktree_root=$(basename -- "$dir_path")
-        tree=$(command perl -e "$kak_opt_kaktree__perl build_tree('$dir_path', '$kaktree_root');")
-        printf "%s\n" "set -add global kaktree__expanded_paths '$dir_path'"
+
+        quoted_root=$(echo "$kaktree_root" | sed 's:/:\\/:g')
+        quoted_dir=$(echo "$dir_path" | sed 's:/:\\/:g')
+
+        tree=$(command perl -e "$kak_opt_kaktree__perl build_tree(q/$quoted_dir/, q/$quoted_root/);")
+        dir_path=$(echo "$kak_reg_k" | sed 's/#/##/g')
+        printf "%s\n" "set -add global kaktree__expanded_paths %#$dir_path#"
 
         printf "%s\n" "set-register '\"' %{$tree
 }"
@@ -349,8 +390,12 @@ define-command -hidden kaktree--dir-unfold %{ evaluate-commands -save-regs 'abck
 define-command -hidden kaktree--dir-fold %{ evaluate-commands -save-regs 'k"/' %{
     kaktree--get-current-path
     evaluate-commands %sh{
-        expanded=$(echo " $kak_quoted_opt_kaktree__expanded_paths " | sed "s| $kak_quoted_reg_k | |g")
-        printf "%s\n" "set global kaktree__expanded_paths $expanded"
+        dir_path=$(echo "$kak_reg_k" | sed "s:/:\\\\/:g;s/'/'\\\\\\\\\''/g")
+        echo "dir_path: $dir_path" 1>&2
+        echo "expanded: $kak_quoted_opt_kaktree__expanded_paths" 1>&2
+        expanded=$(echo "$kak_quoted_opt_kaktree__expanded_paths" | sed "s/'$dir_path'//g;s/'' //g")
+        echo "Expanded: $expanded" 1>&2
+        printf "%s\n" "set global kaktree__expanded_paths ${expanded:-''}"
 
         # Perform the deletion
         printf "%s\n" "execute-keys 'j<a-i>idkI<space><esc><a-h>;/\Q<space>${kak_opt_kaktree_dir_icon_open}\E<ret>c${kak_opt_kaktree_dir_icon_close}<esc>gh'"
@@ -395,8 +440,8 @@ define-command -hidden kaktree--get-current-path -params ..1 %{ evaluate-command
     evaluate-commands %sh{
         # Portable command to get a canonicalized path
         real_path() {
-            cd "$(dirname "$1")"
-            echo "$(pwd)/$(basename "$1")"
+            cd "$(dirname -- "$1")"
+            echo "$(pwd)/$(basename -- "$1")"
         }
         register=${1:-k}
         # Perl will need these variables:
@@ -409,11 +454,12 @@ define-command -hidden kaktree--get-current-path -params ..1 %{ evaluate-command
         file=$(printf "%s\n" "$kak_reg_a" | perl -pe "s/\s*(\Q$kak_opt_kaktree_file_icon\E|\Q$kak_opt_kaktree_dir_icon_close\E|\Q$kak_opt_kaktree_dir_icon_open\E) (.*)$/\$2/g;")
 
         # build full path based on indentation to the currently expanded directory.
-        current_path=$(printf "%s\n" "$kak_quoted_reg_c" | perl -e "$kak_opt_kaktree__perl make_path();")
-        file_path=$(printf "%s\n" "$(pwd)/$current_path/$file" | sed "s/#/##/g")
+        current_path=$(printf "%s\n" "$kak_reg_c" | perl -e "$kak_opt_kaktree__perl make_path();")
+        file_path=$(printf "%s\n" "${PWD%/*}/$current_path/$file")
         file_path=$(real_path "$file_path")
         # If the cursor is at 1, we're at the top level
         [ $kak_cursor_line = 1 ] && file_path="$(pwd)"
+        file_path=$(echo $file_path | sed "s/#/##/g")
         printf "%s\n" "set-register $register %#$file_path#"
     }
 }}
@@ -441,11 +487,67 @@ define-command -hidden kaktree--file-rename %{ evaluate-commands -save-regs 'k' 
     kaktree--shell-prompt "mv %val{main_reg_k} %val{main_reg_k}"
 }}
 
-define-command -hidden kaktree--file-open %{ evaluate-commands -client %opt{kaktree__jumpclient} -save-regs 'k"' %{
-    kaktree--get-current-path
-    focus
-    edit -existing "%val{main_reg_k}"
+define-command -hidden kaktree--file-open -params 1 %{
+    evaluate-commands -client %arg{1} -save-regs 'k"' %{
+        kaktree--get-current-path
+        focus
+        edit -existing "%val{main_reg_k}"
+    }
+}
+
+define-command -hidden kaktree--label-clients %{ evaluate-commands %sh{
+    eval "set -- $kak_quoted_client_list"
+    [ $# -eq 2 ] && [ -z "${kak_quoted_client_list%%*$kak_quoted_opt_kaktreeclient*}" ] && exit
+    client_number=1
+    while [ $# -gt 0 ]; do
+        if [ "$1" != "$kak_opt_kaktreeclient" ]; then
+            printf "%s\n" "evaluate-commands -client $1 %{ info %{$client_number} }" | kak -p $kak_session
+            client_number=$((client_number + 1))
+        fi
+        shift
+    done
 }}
+
+define-command -hidden kaktree--unlabel-clients %{ evaluate-commands %sh{
+    eval "set -- $kak_quoted_client_list"
+    [ $# -eq 2 ] && [ -z "${kak_quoted_client_list%%*$kak_quoted_opt_kaktreeclient*}" ] && exit
+    while [ $# -gt 0 ]; do
+        printf "%s\n" "evaluate-commands -client $1 info %{}" | kak -p $kak_session
+        shift
+    done
+}}
+
+define-command -hidden kaktree--file-open-in-client %{
+    kaktree--label-clients
+    evaluate-commands %sh{
+        eval "set -- $kak_quoted_client_list"
+        if [ $# -eq 2 ] && [ -z "${kak_quoted_client_list%%*$kak_quoted_opt_kaktreeclient*}" ]; then
+            printf "%s\n" "kaktree--file-open $kak_quoted_opt_kaktree__jumpclient"
+        else
+            printf "%s\n" "kaktree--file-open-in-client-impl"
+        fi
+    }
+}
+define-command -hidden kaktree--file-open-in-client-impl %{
+    prompt "choose client by number: " %{ evaluate-commands %sh{
+        choosen_client=$kak_text
+        eval "set -- $kak_quoted_client_list"
+        total_clients=$#
+        client_number=1
+        while [ $client_number -lt $total_clients ]; do
+            [ "$1" = "$kak_opt_kaktreeclient" ] && shift
+            if [ "$client_number" = "$choosen_client" ]; then
+                client_name=$1
+                break
+            fi
+            client_number=$((client_number + 1))
+            shift
+        done
+        [ -z "$client_name" ] && printf "%s\n" "evaluate-commands -client $kak_quoted_opt_kaktree__jumpclient echo -markup %{{Error}no client with \'$kak_text' label found, falling back to \'$kak_quoted_opt_kaktree__jumpclient'}"
+        printf "%s\n" "kaktree--file-open ${client_name:-$kak_quoted_opt_kaktree__jumpclient}"
+        printf "%s\n" "kaktree--unlabel-clients"
+    }}
+}
 
 define-command -hidden kaktree--change-root -params ..1 %{ evaluate-commands -save-regs 'ab"' %{
     kaktree--get-current-path
@@ -460,12 +562,12 @@ define-command -hidden kaktree--change-root -params ..1 %{ evaluate-commands -sa
     }
 }}
 
-hook global ClientClose .* %{ evaluate-commands -client %opt{kaktreeclient} %sh{
+hook global ClientClose .* %{ try %{ evaluate-commands -client %opt{kaktreeclient} %sh{
     eval "set -- ${kak_quoted_client_list}"
     if [ $# -eq 1 ] && [ "$1" = "${kak_opt_kaktreeclient}" ]; then
         printf "%s\n" "kaktree-disable"
     fi
-}}
+}}}
 
 §
 
